@@ -1,0 +1,17 @@
+[package]
+name = "ncm_flac"
+version = "0.6.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+aes = "0.8.2"
+byteorder = "1.4.3"
+base64 = "0.20.0"
+json = "0.12.4"
+metaflac = "0.2"
+#rust-crypto = "^0.2"
+tempfile = "3.3.0"
+id3 = "1.6.0"
