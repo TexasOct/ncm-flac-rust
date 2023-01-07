@@ -1,8 +1,7 @@
 mod parse;
-
-use std::error::Error;
 use clap::Parser;
 use parse::NcmFile;
+use std::time::Instant;
 
 #[derive(Parser, Debug)]
 #[command(author="TexasOct", version="v0.7.0",
@@ -17,8 +16,11 @@ pub struct Args {
 }
 
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
     let args = Args::parse();
+    let now = Instant::now();
     let mut reader = NcmFile::parse(args.files, args.output);
-    reader.output()
+    reader.output().expect("test");
+    let end = now.elapsed();
+    println!("time spend: {} millis", end.as_millis());
 }
