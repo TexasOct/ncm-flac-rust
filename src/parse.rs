@@ -1,46 +1,47 @@
-use std::path::PathBuf;
-use std::{mem, process::exit};
-use std::borrow::Borrow;
-use std::error::Error;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
-use aes::Aes128Dec;
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockDecrypt, KeyInit};
+use aes::Aes128Dec;
 use base64::decode;
 use byteorder::{ByteOrder, NativeEndian};
 use id3::TagLike;
 use json::JsonValue;
+use std::error::Error;
+use std::fs::{File, copy};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
+use std::time::Instant;
+use std::{mem, process::exit};
 use tempfile::NamedTempFile;
 
 type Byte = u8;
 
 pub struct NcmFile {
-    output_name: String,
     output_path: PathBuf,
     meta: JsonValue,
-    cover: Vec<u8>
+    cover: Vec<u8>,
 }
 
-const  AES_CORE_KEY: [u8; 16] =
-    [0x68, 0x7A, 0x48, 0x52, 0x41, 0x6D, 0x73, 0x6F, 0x35, 0x6B, 0x49, 0x6E, 0x62, 0x61, 0x78, 0x57];
+const AES_CORE_KEY: [u8; 16] = [
+    0x68, 0x7A, 0x48, 0x52, 0x41, 0x6D, 0x73, 0x6F, 0x35, 0x6B, 0x49, 0x6E, 0x62, 0x61, 0x78, 0x57,
+];
 
-const  AES_MODIFY_KEY: [u8; 16] =
-    [0x23, 0x31, 0x34, 0x6C, 0x6A, 0x6B, 0x5F, 0x21, 0x5C, 0x5D, 0x26, 0x30, 0x55, 0x3C, 0x27, 0x28];
+const AES_MODIFY_KEY: [u8; 16] = [
+    0x23, 0x31, 0x34, 0x6C, 0x6A, 0x6B, 0x5F, 0x21, 0x5C, 0x5D, 0x26, 0x30, 0x55, 0x3C, 0x27, 0x28,
+];
 
-fn byte_read(file: &mut File, length: u32 ) -> Vec<u8> {
+fn byte_read(file: &mut File, length: u32) -> Vec<u8> {
     let mut buff = Vec::with_capacity(length as usize);
     buff.resize(length as usize, 0);
     if let Err(_) = file.read_exact(&mut buff) {
-        return vec![]
+        return vec![];
     };
     buff
 }
 
-fn get_data(file:&mut File) -> Vec<u8> {
+fn get_data(file: &mut File) -> Vec<u8> {
     let mut buff = [0u8; mem::size_of::<u32>()];
     if let Err(_) = file.read(&mut buff) {
-        return vec![]
+        return vec![];
     };
     byte_read(file, NativeEndian::read_u32(&buff))
 }
@@ -79,11 +80,12 @@ fn decrypt_aes128(vector: Vec<Byte>, option_key: [Byte; 16]) -> Vec<Byte> {
 
     let vec = decrypt_blocks.into_iter().flatten().collect::<Vec<Byte>>();
     let unpadding = vec[vec.len() - 1] as usize;
-    vec[0..(vec.len()-unpadding)].to_vec()
+    vec[0..(vec.len() - unpadding)].to_vec()
 }
 
 fn skip_length(vector: Vec<Byte>, length: usize) -> Vec<Byte> {
-    vector.iter()
+    vector
+        .iter()
         .enumerate()
         .filter(|&(count, _)| count >= length)
         .map(|args| *args.1)
@@ -91,11 +93,7 @@ fn skip_length(vector: Vec<Byte>, length: usize) -> Vec<Byte> {
 }
 
 fn build_key_box(key: Vec<Byte>) -> [u8; 256] {
-    // let mut n_key_box: Vec<_> = vec![0; 256].into_iter()
-    //     .enumerate()
-    //     .map(|size| size.0 as u8)
-    //     .collect();
-    let mut key_box =  [0; 256];
+    let mut key_box = [0; 256];
     for i in 0..256 {
         key_box[i] = i as u8;
     }
@@ -105,7 +103,9 @@ fn build_key_box(key: Vec<Byte>) -> [u8; 256] {
     for count in 0..256 {
         let c = ((key_box[count] as u16 + last_byte as u16 + key[offset] as u16) & 0xff) as u8;
         offset += 1;
-        if offset >= key.len() { offset = 0 }
+        if offset >= key.len() {
+            offset = 0
+        }
         (key_box[c as usize], key_box[count]) = (key_box[count], key_box[c as usize]);
         last_byte = c;
     }
@@ -113,9 +113,32 @@ fn build_key_box(key: Vec<Byte>) -> [u8; 256] {
     key_box
 }
 
+fn write_in(target: &mut PathBuf, file: NamedTempFile, _file_name: &str, _format: &str) -> Result<(), Box<dyn Error>> {
+    match target.file_name() {
+        None => {
+            target.push(_file_name);
+            target.set_extension(_format);
+            let final_target = target;
+            copy(file.into_temp_path(), std::path::Path::new(final_target)).expect("Error!");
+            Ok(())
+        }
+        Some(_) => {
+            if target.is_dir() {
+                target.push(_file_name);
+                target.set_extension(_format);
+                copy(file.into_temp_path(), std::path::Path::new(target)).expect("Error!");
+            } else if target.is_file() {
+                target.set_extension(_format);
+                copy(file.into_temp_path(), std::path::Path::new(target)).expect("Error!");
+            }
+            Ok(())
+        }
+    }
+}
+
 impl NcmFile {
-    pub fn parse(input: PathBuf, output: PathBuf) -> Self {
-        let magic_head:[u8;8] = [0x43, 0x54, 0x45, 0x4e, 0x46, 0x44, 0x41, 0x4d];
+    pub fn parse(input: PathBuf, mut output: PathBuf) -> Self {
+        let magic_head: [u8; 8] = [0x43, 0x54, 0x45, 0x4e, 0x46, 0x44, 0x41, 0x4d];
         let mut src_file = File::open(&input).expect("Can't open the file!");
 
         let mut buf = [0u8; mem::size_of::<u64>()];
@@ -135,7 +158,6 @@ impl NcmFile {
             exit(-1)
         };
 
-
         let s = input.file_name().unwrap().to_str().unwrap();
         let mut music_filename = s.get(0..s.len() - 4).unwrap().to_owned();
         let mut filter = std::collections::HashMap::new();
@@ -149,32 +171,37 @@ impl NcmFile {
         filter.insert("|", "｜");
         for (k, v) in filter.iter() {
             music_filename = music_filename.replace(k, v);
-        };
-
+        }
 
         //163 key parse
-        let key_box =  build_key_box(
-            skip_length(
-                decrypt_aes128(
-                    get_data(&mut src_file)
-                        .into_iter()
-                        .map(|value| value ^ 0x64)
-                        .collect(),
-                    AES_CORE_KEY),
-                17 ));
-
+        let key_box = build_key_box(skip_length(
+            decrypt_aes128(
+                get_data(&mut src_file)
+                    .into_iter()
+                    .map(|value| value ^ 0x64)
+                    .collect(),
+                AES_CORE_KEY,
+            ),
+            17,
+        ));
 
         //Music meta info
-        let meta : Vec<_>= get_data(&mut src_file)
+        let meta: Vec<_> = get_data(&mut src_file)
             .into_iter()
             .map(|value| value ^ 0x63)
             .collect();
         let buff = decode(&meta[22..]).expect("TODO: panic message");
         let meta_info = decrypt_aes128(buff, AES_MODIFY_KEY);
-        let info =
-            json::parse(std::str::from_utf8(&meta_info[6..]).expect("music info is not valid utf-8:"))
-                .expect("error parsing json:");
+        let info = json::parse(
+            std::str::from_utf8(&meta_info[6..]).expect("music info is not valid utf-8:"),
+        )
+            .expect("error parsing json:");
 
+        let format;
+        {
+            let t = info["format"].as_str().unwrap();
+            format = t;
+        }
 
         //Music cover data
         if let Err(e) = src_file.seek(SeekFrom::Current(9)) {
@@ -187,8 +214,9 @@ impl NcmFile {
         // Music data
         let mut n: usize = 0x8000;
         let key = key_box.as_slice();
-        let mut buffer = [0u8; 0xe000];
+        let mut buffer = [0u8; 0x8000];
         let mut tmp = NamedTempFile::new().expect("error 185");
+        let now = Instant::now();
         while n > 1 {
             n = src_file.read(&mut buffer).expect("error 187");
             for i in 0..n {
@@ -198,15 +226,12 @@ impl NcmFile {
             }
             tmp.write(&buffer).expect("error 193");
         }
+        let end = now.elapsed();
+        println!("Parse music time:{} micros", end.as_micros());
 
-
-        std::fs::copy(
-            tmp.into_temp_path(),
-            std::path::Path::new(&music_filename),
-        ).expect("Error!");
-
+        //copy(tmp.into_temp_path(), std::path::Path::new(&music_filename)).expect("Error!");
+        write_in(&mut output, tmp, &music_filename, format).expect("Error Happen!");
         NcmFile {
-            output_name: music_filename.clone(),
             output_path: output,
             meta: info,
             cover,
@@ -215,7 +240,7 @@ impl NcmFile {
 
     pub fn output(&mut self) -> Result<(), Box<dyn Error>> {
         if self.meta.len() != 0 {
-            let music_filename: &str = self.output_name.borrow();
+            let music_filename = self.output_path.as_os_str();
             let mut mimetype = "";
             if self.cover.len() != 0 {
                 let png: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
@@ -252,15 +277,11 @@ impl NcmFile {
                     };
                     tag.add_frame(picture);
                 }
-                tag.write_to_path(
-                    std::path::Path::new(music_filename),
-                    id3::Version::Id3v24,
-                )
+                tag.write_to_path(std::path::Path::new(music_filename), id3::Version::Id3v24)
                     .expect("error writing MP3 file:");
             } else {
-                let mut tag =
-                    metaflac::Tag::read_from_path(std::path::Path::new(music_filename))
-                        .expect("error reading flac file:");
+                let mut tag = metaflac::Tag::read_from_path(std::path::Path::new(music_filename))
+                    .expect("error reading flac file:");
                 let c = tag.vorbis_comments_mut();
 
                 c.set_title(vec![music_name]);
@@ -272,7 +293,11 @@ impl NcmFile {
                 }
                 c.set_artist(artists);
                 if self.cover.len() != 0 {
-                    tag.add_picture(mimetype, metaflac::block::PictureType::CoverFront, self.cover.clone());
+                    tag.add_picture(
+                        mimetype,
+                        metaflac::block::PictureType::CoverFront,
+                        self.cover.clone(),
+                    );
                 }
                 tag.write_to_path(std::path::Path::new(music_filename))
                     .expect("error writing flac file:");

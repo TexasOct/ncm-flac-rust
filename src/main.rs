@@ -4,7 +4,7 @@ use parse::NcmFile;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
-#[command(author="TexasOct", version="v0.7.0",
+#[command(author="TexasOct", version="v1.0.0",
 about="Hello!", long_about="This is a ncm-flac converter")]
 
 pub struct Args {
@@ -22,5 +22,5 @@ fn main() {
     let mut reader = NcmFile::parse(args.files, args.output);
     reader.output().expect("test");
     let end = now.elapsed();
-    println!("time spend: {} millis", end.as_millis());
+    println!("Totel time spend: {} micros", end.as_micros());
 }
