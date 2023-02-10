@@ -6,7 +6,7 @@ use byteorder::{ByteOrder, NativeEndian};
 use id3::TagLike;
 use json::JsonValue;
 use std::error::Error;
-use std::fs::{File, copy};
+use std::fs::{copy, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -79,8 +79,8 @@ fn decrypt_aes128(vector: Vec<Byte>, option_key: [Byte; 16]) -> Vec<Byte> {
         .collect();
 
     let vec = decrypt_blocks.into_iter().flatten().collect::<Vec<Byte>>();
-    let unpadding = vec[vec.len() - 1] as usize;
-    vec[0..(vec.len() - unpadding)].to_vec()
+    let padding = vec[vec.len() - 1] as usize;
+    vec[0..(vec.len() - padding)].to_vec()
 }
 
 fn skip_length(vector: Vec<Byte>, length: usize) -> Vec<Byte> {
@@ -113,7 +113,12 @@ fn build_key_box(key: Vec<Byte>) -> [u8; 256] {
     key_box
 }
 
-fn write_in(target: &mut PathBuf, file: NamedTempFile, _file_name: &str, _format: &str) -> Result<(), Box<dyn Error>> {
+fn write_in(
+    target: &mut PathBuf,
+    file: NamedTempFile,
+    _file_name: &str,
+    _format: &str,
+) -> Result<(), Box<dyn Error>> {
     match target.file_name() {
         None => {
             target.push(_file_name);
@@ -195,7 +200,7 @@ impl NcmFile {
         let info = json::parse(
             std::str::from_utf8(&meta_info[6..]).expect("music info is not valid utf-8:"),
         )
-            .expect("error parsing json:");
+        .expect("error parsing json:");
 
         let format;
         {
@@ -209,7 +214,6 @@ impl NcmFile {
             exit(-1)
         };
         let cover = get_data(&mut src_file);
-
 
         // Music data
         let mut n: usize = 0x8000;

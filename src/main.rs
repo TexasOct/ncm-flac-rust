@@ -1,4 +1,5 @@
 mod parse;
+
 use clap::Parser;
 use parse::NcmFile;
 use std::time::Instant;
@@ -10,7 +11,6 @@ about="Hello!", long_about="This is a ncm-flac converter")]
 pub struct Args {
     #[arg(short, long, help="src files")]
     files: std::path::PathBuf,
-
     #[arg(short, long, help="dest directory", default_value="./")]
     output: std::path::PathBuf,
 }
@@ -22,5 +22,6 @@ fn main() {
     let mut reader = NcmFile::parse(args.files, args.output);
     reader.output().expect("test");
     let end = now.elapsed();
-    println!("Totel time spend: {} micros", end.as_micros());
+    println!("Total time spend: {} micros", end.as_micros());
 }
+
