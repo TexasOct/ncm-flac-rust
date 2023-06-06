@@ -3,6 +3,7 @@ mod parse;
 use clap::Parser;
 use parse::NcmFile;
 use std::time::Instant;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(author="TexasOct", version="v1.0.0",
@@ -10,9 +11,9 @@ about="Hello!", long_about="This is a ncm-flac converter")]
 
 pub struct Args {
     #[arg(short, long, help="src files")]
-    files: std::path::PathBuf,
+    files: PathBuf,
     #[arg(short, long, help="dest directory", default_value="./")]
-    output: std::path::PathBuf,
+    output: PathBuf,
 }
 
 

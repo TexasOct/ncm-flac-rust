@@ -5,6 +5,7 @@ use base64::decode;
 use byteorder::{ByteOrder, NativeEndian};
 use id3::TagLike;
 use json::JsonValue;
+use phf::{phf_map, Map};
 use std::error::Error;
 use std::fs::{copy, File};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -28,6 +29,17 @@ const AES_CORE_KEY: [u8; 16] = [
 const AES_MODIFY_KEY: [u8; 16] = [
     0x23, 0x31, 0x34, 0x6C, 0x6A, 0x6B, 0x5F, 0x21, 0x5C, 0x5D, 0x26, 0x30, 0x55, 0x3C, 0x27, 0x28,
 ];
+
+static FILTER: Map<&'static str, &'static str> = phf_map! {
+        "\\" => "＼",
+        "/" => "／",
+        ":" => "：",
+        "*" => "＊",
+        "\"" => "＂",
+        "<" => "＜",
+        ">" => "＞",
+        "|" => "｜",
+};
 
 fn byte_read(file: &mut File, length: u32) -> Vec<u8> {
     let mut buff = Vec::with_capacity(length as usize);
@@ -146,8 +158,10 @@ impl NcmFile {
         let magic_head: [u8; 8] = [0x43, 0x54, 0x45, 0x4e, 0x46, 0x44, 0x41, 0x4d];
         let mut src_file = File::open(&input).expect("Can't open the file!");
 
+        // create the buf to parse data
         let mut buf = [0u8; mem::size_of::<u64>()];
 
+        // judge magic head
         if let Err(e) = src_file.read(&mut buf) {
             println!("Error:{e},can't read head to confirm!");
             exit(-1)
@@ -159,23 +173,17 @@ impl NcmFile {
         }
 
         if let Err(e) = src_file.seek(SeekFrom::Current(2)) {
+            // set offset to move 2 byte
             println!("Error:{e}");
             exit(-1)
         };
 
+        // to parse music file name
         let s = input.file_name().unwrap().to_str().unwrap();
         let mut music_filename = s.get(0..s.len() - 4).unwrap().to_owned();
-        let mut filter = std::collections::HashMap::new();
-        filter.insert("\\", "＼");
-        filter.insert("/", "／");
-        filter.insert(":", "：");
-        filter.insert("*", "＊");
-        filter.insert("\"", "＂");
-        filter.insert("<", "＜");
-        filter.insert(">", "＞");
-        filter.insert("|", "｜");
-        for (k, v) in filter.iter() {
-            music_filename = music_filename.replace(k, v);
+
+        for (k, v) in FILTER.into_iter() {
+            music_filename = music_filename.replace(*k, *v);
         }
 
         //163 key parse
@@ -202,17 +210,14 @@ impl NcmFile {
         )
         .expect("error parsing json:");
 
-        let format;
-        {
-            let t = info["format"].as_str().unwrap();
-            format = t;
-        }
 
+        let format = info["format"].as_str().unwrap();
         //Music cover data
         if let Err(e) = src_file.seek(SeekFrom::Current(9)) {
             println!("Error:{e}");
             exit(-1)
         };
+
         let cover = get_data(&mut src_file);
 
         // Music data
@@ -230,10 +235,10 @@ impl NcmFile {
             }
             tmp.write(&buffer).expect("error 193");
         }
+
         let end = now.elapsed();
         println!("Parse music time:{} micros", end.as_micros());
 
-        //copy(tmp.into_temp_path(), std::path::Path::new(&music_filename)).expect("Error!");
         write_in(&mut output, tmp, &music_filename, format).expect("Error Happen!");
         NcmFile {
             output_path: output,
@@ -244,9 +249,12 @@ impl NcmFile {
 
     pub fn output(&mut self) -> Result<(), Box<dyn Error>> {
         if self.meta.len() != 0 {
+            // judge if metadate is exist
             let music_filename = self.output_path.as_os_str();
             let mut mimetype = "";
+
             if self.cover.len() != 0 {
+                // judge cover data
                 let png: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
                 if png == &self.cover[..8] {
                     mimetype = "image/png";
@@ -258,9 +266,10 @@ impl NcmFile {
             let music_name = self.meta["musicName"].as_str().unwrap();
             let album = self.meta["album"].as_str().unwrap();
             let artist = &self.meta["artist"];
-            let _bitrate = self.meta["bitrate"].as_i64().unwrap();
-            let _duration = self.meta["duration"].as_i64().unwrap();
+            let _bitrate = self.meta["bitrate"].as_u64().unwrap();
+            let _duration = self.meta["duration"].as_u64().unwrap();
 
+            // match music type
             if self.meta["format"].as_str().unwrap() == "mp3" {
                 let mut tag = id3::Tag::read_from_path(std::path::Path::new(music_filename))
                     .unwrap_or(id3::Tag::new());
@@ -283,7 +292,7 @@ impl NcmFile {
                 }
                 tag.write_to_path(std::path::Path::new(music_filename), id3::Version::Id3v24)
                     .expect("error writing MP3 file:");
-            } else {
+            } else  {
                 let mut tag = metaflac::Tag::read_from_path(std::path::Path::new(music_filename))
                     .expect("error reading flac file:");
                 let c = tag.vorbis_comments_mut();
