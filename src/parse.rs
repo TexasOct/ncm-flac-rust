@@ -9,8 +9,8 @@ use phf::{phf_map, Map};
 use std::error::Error;
 use std::fs::{copy, File};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+// use std::time::Instant;
 use std::{mem, process::exit};
 use tempfile::NamedTempFile;
 
@@ -41,7 +41,7 @@ static FILTER: Map<&'static str, &'static str> = phf_map! {
         "|" => "｜",
 };
 
-fn byte_read(file: &mut File, length: u32) -> Vec<u8> {
+fn bytes_read(file: &mut File, length: u32) -> Vec<u8> {
     let mut buff = Vec::with_capacity(length as usize);
     buff.resize(length as usize, 0);
     if let Err(_) = file.read_exact(&mut buff) {
@@ -52,44 +52,49 @@ fn byte_read(file: &mut File, length: u32) -> Vec<u8> {
 
 fn get_data(file: &mut File) -> Vec<u8> {
     let mut buff = [0u8; mem::size_of::<u32>()];
+
     if let Err(_) = file.read(&mut buff) {
         return vec![];
     };
-    byte_read(file, NativeEndian::read_u32(&buff))
-}
 
-fn format(vec: Vec<Byte>) -> Vec<[Byte; 16]> {
-    let mut buff: [u8; 16] = [0; 16];
-    let mut container = Vec::new();
-
-    for (count, value) in vec.iter().enumerate() {
-        if (count + 1) % 16 == 0 {
-            buff[count % 16] = *value;
-            container.push(buff);
-            buff = [0; 16]
-        } else {
-            buff[count % 16] = *value;
-        }
-    }
-
-    container
+    bytes_read(file, NativeEndian::read_u32(&buff))
 }
 
 fn decrypt_aes128(vector: Vec<Byte>, option_key: [Byte; 16]) -> Vec<Byte> {
-    let vector_blocks = format(vector);
+    let vector_blocks = {
+        let mut buff: [u8; 16] = [0; 16];
+        let mut container = Vec::new();
+
+        for (count, value) in vector.iter().enumerate() {
+            if (count + 1) % 16 == 0 {
+                buff[count % 16] = *value;
+                container.push(buff);
+                buff = [0; 16]
+            } else {
+                buff[count % 16] = *value;
+            }
+        }
+
+        container
+    };
+
     let key = GenericArray::from(option_key);
     let cipher = Aes128Dec::new(&key);
 
+    // To decrypt aes block
     let decrypt_blocks: Vec<_> = vector_blocks
         .iter()
         .map(|block| {
             let mut block_generic = GenericArray::from(*block);
             cipher.decrypt_block(&mut block_generic);
-            let buff: Vec<_> = block_generic.to_vec().iter().map(|x| *x).collect();
+            let buff: Vec<_> = block_generic.to_vec().iter()
+                .map(|x| *x)
+                .collect();
             buff
         })
         .collect();
 
+    // To remove aes padding len
     let vec = decrypt_blocks.into_iter().flatten().collect::<Vec<Byte>>();
     let padding = vec[vec.len() - 1] as usize;
     vec[0..(vec.len() - padding)].to_vec()
@@ -97,10 +102,10 @@ fn decrypt_aes128(vector: Vec<Byte>, option_key: [Byte; 16]) -> Vec<Byte> {
 
 fn skip_length(vector: Vec<Byte>, length: usize) -> Vec<Byte> {
     vector
-        .iter()
+        .into_iter()
         .enumerate()
         .filter(|&(count, _)| count >= length)
-        .map(|args| *args.1)
+        .map(|args| args.1)
         .collect()
 }
 
@@ -136,17 +141,17 @@ fn write_in(
             target.push(_file_name);
             target.set_extension(_format);
             let final_target = target;
-            copy(file.into_temp_path(), std::path::Path::new(final_target)).expect("Error!");
+            copy(file.into_temp_path(), Path::new(final_target)).expect("Error!");
             Ok(())
         }
         Some(_) => {
             if target.is_dir() {
                 target.push(_file_name);
                 target.set_extension(_format);
-                copy(file.into_temp_path(), std::path::Path::new(target)).expect("Error!");
+                copy(file.into_temp_path(), Path::new(target)).expect("Error!");
             } else if target.is_file() {
                 target.set_extension(_format);
-                copy(file.into_temp_path(), std::path::Path::new(target)).expect("Error!");
+                copy(file.into_temp_path(), Path::new(target)).expect("Error!");
             }
             Ok(())
         }
@@ -210,7 +215,6 @@ impl NcmFile {
         )
         .expect("error parsing json:");
 
-
         let format = info["format"].as_str().unwrap();
         //Music cover data
         if let Err(e) = src_file.seek(SeekFrom::Current(9)) {
@@ -225,7 +229,8 @@ impl NcmFile {
         let key = key_box.as_slice();
         let mut buffer = [0u8; 0x8000];
         let mut tmp = NamedTempFile::new().expect("error 185");
-        let now = Instant::now();
+        // let now = Instant::now();
+
         while n > 1 {
             n = src_file.read(&mut buffer).expect("error 187");
             for i in 0..n {
@@ -236,8 +241,8 @@ impl NcmFile {
             tmp.write(&buffer).expect("error 193");
         }
 
-        let end = now.elapsed();
-        println!("Parse music time:{} micros", end.as_micros());
+        // let end = now.elapsed();
+        // println!("Parse music time:{} micros", end.as_micros());
 
         write_in(&mut output, tmp, &music_filename, format).expect("Error Happen!");
         NcmFile {
@@ -271,8 +276,8 @@ impl NcmFile {
 
             // match music type
             if self.meta["format"].as_str().unwrap() == "mp3" {
-                let mut tag = id3::Tag::read_from_path(std::path::Path::new(music_filename))
-                    .unwrap_or(id3::Tag::new());
+                let mut tag =
+                    id3::Tag::read_from_path(Path::new(music_filename)).unwrap_or(id3::Tag::new());
                 tag.set_title(music_name);
                 tag.set_album(album);
                 let mut artists = String::from(artist[0][0].as_str().unwrap());
@@ -292,8 +297,8 @@ impl NcmFile {
                 }
                 tag.write_to_path(std::path::Path::new(music_filename), id3::Version::Id3v24)
                     .expect("error writing MP3 file:");
-            } else  {
-                let mut tag = metaflac::Tag::read_from_path(std::path::Path::new(music_filename))
+            } else {
+                let mut tag = metaflac::Tag::read_from_path(Path::new(music_filename))
                     .expect("error reading flac file:");
                 let c = tag.vorbis_comments_mut();
 
@@ -312,7 +317,7 @@ impl NcmFile {
                         self.cover.clone(),
                     );
                 }
-                tag.write_to_path(std::path::Path::new(music_filename))
+                tag.write_to_path(Path::new(music_filename))
                     .expect("error writing flac file:");
             }
         }

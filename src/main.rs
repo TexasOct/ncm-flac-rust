@@ -18,11 +18,11 @@ pub struct Args {
 
 
 fn main() {
-    let args = Args::parse();
-    let now = Instant::now();
-    let mut reader = NcmFile::parse(args.files, args.output);
+    let args= Args::parse();
+    let now= Instant::now();
+    let mut reader= NcmFile::parse(args.files, args.output);
     reader.output().expect("test");
-    let end = now.elapsed();
+    let end= now.elapsed();
     println!("Total time spend: {} micros", end.as_micros());
 }
 
