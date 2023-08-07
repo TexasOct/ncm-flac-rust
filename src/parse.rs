@@ -1,20 +1,16 @@
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecrypt, KeyInit};
-use aes::Aes128Dec;
-use base64::decode;
-use byteorder::{ByteOrder, NativeEndian};
+mod utils;
+use base64::engine::general_purpose;
+use base64::Engine;
 use id3::TagLike;
 use json::JsonValue;
 use phf::{phf_map, Map};
 use std::error::Error;
-use std::fs::{copy, File};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-// use std::time::Instant;
 use std::{mem, process::exit};
 use tempfile::NamedTempFile;
-
-type Byte = u8;
+use utils::*;
 
 pub struct NcmFile {
     output_path: PathBuf,
@@ -40,123 +36,6 @@ static FILTER: Map<&'static str, &'static str> = phf_map! {
         ">" => "＞",
         "|" => "｜",
 };
-
-fn bytes_read(file: &mut File, length: u32) -> Vec<u8> {
-    let mut buff = Vec::with_capacity(length as usize);
-    buff.resize(length as usize, 0);
-    if let Err(_) = file.read_exact(&mut buff) {
-        return vec![];
-    };
-    buff
-}
-
-fn get_data(file: &mut File) -> Vec<u8> {
-    let mut buff = [0u8; mem::size_of::<u32>()];
-
-    if let Err(_) = file.read(&mut buff) {
-        return vec![];
-    };
-
-    bytes_read(file, NativeEndian::read_u32(&buff))
-}
-
-fn decrypt_aes128(vector: Vec<Byte>, option_key: [Byte; 16]) -> Vec<Byte> {
-    let vector_blocks = {
-        let mut buff: [u8; 16] = [0; 16];
-        let mut container = Vec::new();
-
-        for (count, value) in vector.iter().enumerate() {
-            if (count + 1) % 16 == 0 {
-                buff[count % 16] = *value;
-                container.push(buff);
-                buff = [0; 16]
-            } else {
-                buff[count % 16] = *value;
-            }
-        }
-
-        container
-    };
-
-    let key = GenericArray::from(option_key);
-    let cipher = Aes128Dec::new(&key);
-
-    // To decrypt aes block
-    let decrypt_blocks: Vec<_> = vector_blocks
-        .iter()
-        .map(|block| {
-            let mut block_generic = GenericArray::from(*block);
-            cipher.decrypt_block(&mut block_generic);
-            let buff: Vec<_> = block_generic.to_vec().iter()
-                .map(|x| *x)
-                .collect();
-            buff
-        })
-        .collect();
-
-    // To remove aes padding len
-    let vec = decrypt_blocks.into_iter().flatten().collect::<Vec<Byte>>();
-    let padding = vec[vec.len() - 1] as usize;
-    vec[0..(vec.len() - padding)].to_vec()
-}
-
-fn skip_length(vector: Vec<Byte>, length: usize) -> Vec<Byte> {
-    vector
-        .into_iter()
-        .enumerate()
-        .filter(|&(count, _)| count >= length)
-        .map(|args| args.1)
-        .collect()
-}
-
-fn build_key_box(key: Vec<Byte>) -> [u8; 256] {
-    let mut key_box = [0; 256];
-    for i in 0..256 {
-        key_box[i] = i as u8;
-    }
-    let mut last_byte = 0;
-    let mut offset = 0;
-
-    for count in 0..256 {
-        let c = ((key_box[count] as u16 + last_byte as u16 + key[offset] as u16) & 0xff) as u8;
-        offset += 1;
-        if offset >= key.len() {
-            offset = 0
-        }
-        (key_box[c as usize], key_box[count]) = (key_box[count], key_box[c as usize]);
-        last_byte = c;
-    }
-
-    key_box
-}
-
-fn write_in(
-    target: &mut PathBuf,
-    file: NamedTempFile,
-    _file_name: &str,
-    _format: &str,
-) -> Result<(), Box<dyn Error>> {
-    match target.file_name() {
-        None => {
-            target.push(_file_name);
-            target.set_extension(_format);
-            let final_target = target;
-            copy(file.into_temp_path(), Path::new(final_target)).expect("Error!");
-            Ok(())
-        }
-        Some(_) => {
-            if target.is_dir() {
-                target.push(_file_name);
-                target.set_extension(_format);
-                copy(file.into_temp_path(), Path::new(target)).expect("Error!");
-            } else if target.is_file() {
-                target.set_extension(_format);
-                copy(file.into_temp_path(), Path::new(target)).expect("Error!");
-            }
-            Ok(())
-        }
-    }
-}
 
 impl NcmFile {
     pub fn parse(input: PathBuf, mut output: PathBuf) -> Self {
@@ -208,7 +87,9 @@ impl NcmFile {
             .into_iter()
             .map(|value| value ^ 0x63)
             .collect();
-        let buff = decode(&meta[22..]).expect("TODO: panic message");
+        let buff = general_purpose::STANDARD
+            .decode(&meta[22..])
+            .expect("TODO: panic message");
         let meta_info = decrypt_aes128(buff, AES_MODIFY_KEY);
         let info = json::parse(
             std::str::from_utf8(&meta_info[6..]).expect("music info is not valid utf-8:"),
@@ -268,9 +149,18 @@ impl NcmFile {
                 }
             }
 
-            let music_name = self.meta["musicName"].as_str().unwrap();
-            let album = self.meta["album"].as_str().unwrap();
+            let music_name = match self.meta["musicName"].as_str() {
+                Some(t) => t,
+                None => "?",
+            };
+
+            let album = match self.meta["album"].as_str() {
+                Some(t) => t,
+                None => "?",
+            };
+
             let artist = &self.meta["artist"];
+
             let _bitrate = self.meta["bitrate"].as_u64().unwrap();
             let _duration = self.meta["duration"].as_u64().unwrap();
 
@@ -278,13 +168,20 @@ impl NcmFile {
             if self.meta["format"].as_str().unwrap() == "mp3" {
                 let mut tag =
                     id3::Tag::read_from_path(Path::new(music_filename)).unwrap_or(id3::Tag::new());
+
                 tag.set_title(music_name);
                 tag.set_album(album);
-                let mut artists = String::from(artist[0][0].as_str().unwrap());
+
+                let mut artists = match artist.as_str() {
+                    Some(str) => String::from(str),
+                    None => String::from("unknown"),
+                };
+
                 for i in 1..artist.len() {
                     artists += "/";
                     artists += artist[i][0].as_str().unwrap();
                 }
+
                 tag.set_artist(artists);
                 if self.cover.len() != 0 {
                     let picture = id3::frame::Picture {
@@ -309,6 +206,7 @@ impl NcmFile {
                 for i in 0..artist.len() {
                     artists.push(artist[i][0].as_str().unwrap().to_string());
                 }
+
                 c.set_artist(artists);
                 if self.cover.len() != 0 {
                     tag.add_picture(

@@ -9,12 +9,12 @@ edition = "2021"
 clap = { version = "4.0", features = ["derive"] }
 aes = "0.8.2"
 byteorder = "1.4.3"
-base64 = "0.20.0"
+base64 = "0.21.2"
 json = "0.12.4"
 metaflac = "0.2"
 tempfile = "3.3.0"
 id3 = "1.6.0"
-phf = { version = "0.11.1", features = ["macros"] }
+phf = { version = "0.11.2", features = ["macros"] }
 
 [profile.release]
 lto = true
