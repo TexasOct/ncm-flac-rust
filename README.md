@@ -1,9 +1,15 @@
 # ncm-flac-rust
-A rust ncm2flac script
+
+A rust ncm2flac script program
 
 ## TODO
-- MultiThread
-- MultiFile
 
+- MultiThread with MultiFil
+
+## Build
+
+```
+ cargo build --release
+```
 
 Just use with `--help`
