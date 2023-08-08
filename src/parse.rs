@@ -18,6 +18,8 @@ pub struct NcmFile {
     cover: Vec<u8>,
 }
 
+const MAGIC_HEAD: [u8; 8] = [0x43, 0x54, 0x45, 0x4e, 0x46, 0x44, 0x41, 0x4d];
+
 const AES_CORE_KEY: [u8; 16] = [
     0x68, 0x7A, 0x48, 0x52, 0x41, 0x6D, 0x73, 0x6F, 0x35, 0x6B, 0x49, 0x6E, 0x62, 0x61, 0x78, 0x57,
 ];
@@ -39,7 +41,6 @@ static FILTER: Map<&'static str, &'static str> = phf_map! {
 
 impl NcmFile {
     pub fn parse(input: PathBuf, mut output: PathBuf) -> Self {
-        let magic_head: [u8; 8] = [0x43, 0x54, 0x45, 0x4e, 0x46, 0x44, 0x41, 0x4d];
         let mut src_file = File::open(&input).expect("Can't open the file!");
 
         // create the buf to parse data
@@ -51,7 +52,7 @@ impl NcmFile {
             exit(-1)
         };
 
-        if buf != magic_head {
+        if buf != MAGIC_HEAD {
             println!("This is not a ncm file!");
             exit(-1)
         }
@@ -62,7 +63,7 @@ impl NcmFile {
             exit(-1)
         };
 
-        // to parse music file name
+        // Parse music file name
         let s = input.file_name().unwrap().to_str().unwrap();
         let mut music_filename = s.get(0..s.len() - 4).unwrap().to_owned();
 
@@ -70,33 +71,36 @@ impl NcmFile {
             music_filename = music_filename.replace(*k, *v);
         }
 
+        let key_box_slice = decrypt_aes128(
+            get_data(&mut src_file)
+                .into_iter()
+                .map(|value| value ^ 0x64)
+                .collect(),
+            AES_CORE_KEY,
+        );
+
         //163 key parse
-        let key_box = build_key_box(skip_length(
-            decrypt_aes128(
-                get_data(&mut src_file)
-                    .into_iter()
-                    .map(|value| value ^ 0x64)
-                    .collect(),
-                AES_CORE_KEY,
-            ),
-            17,
-        ));
+        let key_box = build_key_box(key_box_slice[17..].to_vec());
 
         //Music meta info
         let meta: Vec<_> = get_data(&mut src_file)
             .into_iter()
             .map(|value| value ^ 0x63)
             .collect();
+
         let buff = general_purpose::STANDARD
             .decode(&meta[22..])
             .expect("TODO: panic message");
+
         let meta_info = decrypt_aes128(buff, AES_MODIFY_KEY);
+
         let info = json::parse(
             std::str::from_utf8(&meta_info[6..]).expect("music info is not valid utf-8:"),
         )
         .expect("error parsing json:");
 
         let format = info["format"].as_str().unwrap();
+
         //Music cover data
         if let Err(e) = src_file.seek(SeekFrom::Current(9)) {
             println!("Error:{e}");
@@ -108,11 +112,10 @@ impl NcmFile {
         // Music data
         let mut n: usize = 0x8000;
         let key = key_box.as_slice();
-        let mut buffer = [0u8; 0x8000];
         let mut tmp = NamedTempFile::new().expect("error 185");
-        // let now = Instant::now();
 
         while n > 1 {
+            let mut buffer = [0u8; 0x8000];
             n = src_file.read(&mut buffer).expect("error 187");
             for i in 0..n {
                 let j = (i + 1) & 0xff;
@@ -121,9 +124,6 @@ impl NcmFile {
             }
             tmp.write(&buffer).expect("error 193");
         }
-
-        // let end = now.elapsed();
-        // println!("Parse music time:{} micros", end.as_micros());
 
         write_in(&mut output, tmp, &music_filename, format).expect("Error Happen!");
         NcmFile {
@@ -137,11 +137,12 @@ impl NcmFile {
         if self.meta.len() != 0 {
             // judge if metadate is exist
             let music_filename = self.output_path.as_os_str();
-            let mut mimetype = "";
+
+            let mut mimetype: &str = "";
 
             if self.cover.len() != 0 {
                 // judge cover data
-                let png: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+                let png: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
                 if png == &self.cover[..8] {
                     mimetype = "image/png";
                 } else {
@@ -149,20 +150,15 @@ impl NcmFile {
                 }
             }
 
-            let music_name = match self.meta["musicName"].as_str() {
-                Some(t) => t,
-                None => "?",
-            };
+            let music_name = self.meta["musicName"].as_str().unwrap_or("?");
 
-            let album = match self.meta["album"].as_str() {
-                Some(t) => t,
-                None => "?",
-            };
+            let album = self.meta["album"].as_str().unwrap_or("?");
 
             let artist = &self.meta["artist"];
 
-            let _bitrate = self.meta["bitrate"].as_u64().unwrap();
-            let _duration = self.meta["duration"].as_u64().unwrap();
+            let _bitrate = self.meta["bitrate"].as_u64().unwrap_or(0);
+
+            let _duration = self.meta["duration"].as_u64().unwrap_or(0);
 
             // match music type
             if self.meta["format"].as_str().unwrap() == "mp3" {
@@ -192,7 +188,7 @@ impl NcmFile {
                     };
                     tag.add_frame(picture);
                 }
-                tag.write_to_path(std::path::Path::new(music_filename), id3::Version::Id3v24)
+                tag.write_to_path(Path::new(music_filename), id3::Version::Id3v24)
                     .expect("error writing MP3 file:");
             } else {
                 let mut tag = metaflac::Tag::read_from_path(Path::new(music_filename))

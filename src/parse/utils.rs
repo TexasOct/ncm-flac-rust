@@ -5,8 +5,8 @@ use byteorder::{ByteOrder, NativeEndian};
 use std::error::Error;
 use std::fs::{copy, File};
 use std::io::Read;
-use std::path::{Path, PathBuf};
 use std::mem;
+use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 type Byte = u8;
@@ -57,9 +57,7 @@ pub fn decrypt_aes128(vector: Vec<Byte>, option_key: [Byte; 16]) -> Vec<Byte> {
         .map(|block| {
             let mut block_generic = GenericArray::from(*block);
             cipher.decrypt_block(&mut block_generic);
-            let buff: Vec<_> = block_generic.to_vec().iter()
-                .map(|x| *x)
-                .collect();
+            let buff: Vec<_> = block_generic.to_vec().iter().map(|x| *x).collect();
             buff
         })
         .collect();
@@ -68,15 +66,6 @@ pub fn decrypt_aes128(vector: Vec<Byte>, option_key: [Byte; 16]) -> Vec<Byte> {
     let vec = decrypt_blocks.into_iter().flatten().collect::<Vec<Byte>>();
     let padding = vec[vec.len() - 1] as usize;
     vec[0..(vec.len() - padding)].to_vec()
-}
-
-pub fn skip_length(vector: Vec<Byte>, length: usize) -> Vec<Byte> {
-    vector
-        .into_iter()
-        .enumerate()
-        .filter(|&(count, _)| count >= length)
-        .map(|args| args.1)
-        .collect()
 }
 
 pub fn build_key_box(key: Vec<Byte>) -> [u8; 256] {
