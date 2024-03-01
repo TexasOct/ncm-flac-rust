@@ -1,16 +1,16 @@
-mod utils;
-use base64::engine::general_purpose;
-use base64::Engine;
-use id3::TagLike;
-use json::JsonValue;
-use phf::{phf_map, Map};
 use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::mem;
 use std::path::{Path, PathBuf};
-use std::{mem, process::exit};
+use std::process::exit;
+use base64::Engine;
+use base64::engine::general_purpose;
+use id3::TagLike;
+use json::JsonValue;
+use phf::{Map, phf_map};
 use tempfile::NamedTempFile;
-use utils::*;
+use utils::{build_key_box, decrypt_aes128, get_data, write_in};
 
 pub struct NcmFile {
     output_path: PathBuf,
@@ -43,7 +43,7 @@ impl NcmFile {
     pub fn parse(input: PathBuf, mut output: PathBuf) -> Self {
         let mut src_file = File::open(&input).expect("Can't open the file!");
 
-        // create the buf to parse data
+        // create the buf to ncm_flac data
         let mut buf = [0u8; mem::size_of::<u64>()];
 
         // judge magic head
@@ -64,8 +64,19 @@ impl NcmFile {
         };
 
         // Parse music file name
-        let s = input.file_name().unwrap().to_str().unwrap();
-        let mut music_filename = s.get(0..s.len() - 4).unwrap().to_owned();
+        let s = match input.file_name() {
+            None => panic!("read filename wrong"),
+            Some(str) =>
+                match str.to_str() {
+                    None => panic!("error name string"),
+                    Some(str) => str
+                }
+        };
+
+        let mut music_filename = match s.get(0..s.len() - 4){
+            None => panic!("read filename wrong"),
+            Some(name) => name.to_string()
+        };
 
         for (k, v) in FILTER.into_iter() {
             music_filename = music_filename.replace(*k, *v);
@@ -79,7 +90,7 @@ impl NcmFile {
             AES_CORE_KEY,
         );
 
-        //163 key parse
+        //163 key ncm_flac
         let key_box = build_key_box(key_box_slice[17..].to_vec());
 
         //Music meta info
@@ -97,7 +108,7 @@ impl NcmFile {
         let info = json::parse(
             std::str::from_utf8(&meta_info[6..]).expect("music info is not valid utf-8:"),
         )
-        .expect("error parsing json:");
+            .expect("error parsing json:");
 
         let format = info["format"].as_str().unwrap();
 
@@ -179,6 +190,7 @@ impl NcmFile {
                 }
 
                 tag.set_artist(artists);
+
                 if self.cover.len() != 0 {
                     let picture = id3::frame::Picture {
                         mime_type: mimetype.to_owned(),
@@ -186,11 +198,15 @@ impl NcmFile {
                         description: String::new(),
                         data: self.cover.clone(),
                     };
+
                     tag.add_frame(picture);
                 }
+
                 tag.write_to_path(Path::new(music_filename), id3::Version::Id3v24)
                     .expect("error writing MP3 file:");
+
             } else {
+
                 let mut tag = metaflac::Tag::read_from_path(Path::new(music_filename))
                     .expect("error reading flac file:");
                 let c = tag.vorbis_comments_mut();
@@ -211,10 +227,135 @@ impl NcmFile {
                         self.cover.clone(),
                     );
                 }
+
                 tag.write_to_path(Path::new(music_filename))
                     .expect("error writing flac file:");
             }
         }
         Ok(())
     }
+}
+
+mod utils {
+    use std::error::Error;
+    use std::fs::{copy, File};
+    use std::io::Read;
+    use std::mem;
+    use std::path::{Path, PathBuf};
+
+    use aes::Aes128Dec;
+    use aes::cipher::{BlockDecrypt, KeyInit};
+    use aes::cipher::generic_array::GenericArray;
+    use byteorder::{ByteOrder, NativeEndian};
+    use tempfile::NamedTempFile;
+
+    type Byte = u8;
+
+    fn bytes_read(file: &mut File, length: u32) -> Vec<u8> {
+        let mut buff = Vec::with_capacity(length as usize);
+        buff.resize(length as usize, 0);
+
+        if let Err(_) = file.read_exact(&mut buff) {
+            return vec![];
+        };
+
+        buff
+    }
+
+    pub fn get_data(file: &mut File) -> Vec<u8> {
+        let mut buff = [0u8; mem::size_of::<u32>()];
+
+        if let Err(_) = file.read(&mut buff) {
+            return vec![];
+        };
+
+        bytes_read(file, NativeEndian::read_u32(&buff))
+    }
+
+    pub fn decrypt_aes128(vector: Vec<Byte>, option_key: [Byte; 16]) -> Vec<Byte> {
+        let vector_blocks = {
+            let mut buff: [u8; 16] = [0; 16];
+            let mut container = Vec::new();
+
+            for (count, value) in vector.iter().enumerate() {
+                if (count + 1) % 16 == 0 {
+                    buff[count % 16] = *value;
+                    container.push(buff);
+                    buff = [0; 16]
+                } else {
+                    buff[count % 16] = *value;
+                }
+            }
+
+            container
+        };
+
+        let key = GenericArray::from(option_key);
+        let cipher = Aes128Dec::new(&key);
+
+        // To decrypt aes block
+        let decrypt_blocks: Vec<_> = vector_blocks
+            .iter()
+            .map(|block| {
+                let mut block_generic = GenericArray::from(*block);
+                cipher.decrypt_block(&mut block_generic);
+                let buff: Vec<_> = block_generic.to_vec().iter().map(|x| *x).collect();
+                buff
+            })
+            .collect();
+
+        // To remove aes padding len
+        let vec = decrypt_blocks.into_iter().flatten().collect::<Vec<Byte>>();
+        let padding = vec[vec.len() - 1] as usize;
+        vec[0..(vec.len() - padding)].to_vec()
+    }
+
+    pub fn build_key_box(key: Vec<Byte>) -> [u8; 256] {
+        let mut key_box = [0; 256];
+        for i in 0..256 {
+            key_box[i] = i as u8;
+        }
+        let mut last_byte = 0;
+        let mut offset = 0;
+
+        for count in 0..256 {
+            let c = ((key_box[count] as u16 + last_byte as u16 + key[offset] as u16) & 0xff) as u8;
+            offset += 1;
+            if offset >= key.len() {
+                offset = 0
+            }
+            (key_box[c as usize], key_box[count]) = (key_box[count], key_box[c as usize]);
+            last_byte = c;
+        }
+
+        key_box
+    }
+
+    pub fn write_in(
+        target: &mut PathBuf,
+        file: NamedTempFile,
+        _file_name: &str,
+        _format: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        match target.file_name() {
+            None => {
+                target.push(_file_name);
+                target.set_extension(_format);
+                copy(file.into_temp_path(), Path::new(target)).expect("Error!");
+                Ok(())
+            }
+            Some(_) => {
+                if target.is_dir() {
+                    target.push(_file_name);
+                    target.set_extension(_format);
+                    copy(file.into_temp_path(), Path::new(target)).expect("Error!");
+                } else if target.is_file() {
+                    target.set_extension(_format);
+                    copy(file.into_temp_path(), Path::new(target)).expect("Error!");
+                }
+                Ok(())
+            }
+        }
+    }
+
 }

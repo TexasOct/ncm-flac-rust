@@ -2,10 +2,6 @@
 
 A rust ncm2flac script program
 
-## TODO
-
-- MultiThread with MultiFil
-
 ## Build
 
 ```
