@@ -3,6 +3,7 @@ mod ncm_flac;
 use clap::Parser;
 use ncm_flac::parse_multiple_files;
 use std::path::PathBuf;
+use std::process::exit;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -14,7 +15,7 @@ use std::time::Instant;
 )]
 
 pub struct Args {
-    #[arg(short, long, help="src files", num_args = 1..)]
+    #[arg(short, long, help = "src files", num_args = 1..)]
     files: Vec<PathBuf>,
     #[arg(short, long, help = "destination directory", default_value = "./")]
     output: PathBuf,
@@ -24,6 +25,10 @@ pub struct Args {
 
 fn main() {
     let args = Args::parse();
+    if args.files.len() == 0 {
+        println!("No files to parse");
+        exit(1);
+    }
     let now = Instant::now();
     parse_multiple_files(args.files, args.output, args.thread_num);
     let end = now.elapsed();
