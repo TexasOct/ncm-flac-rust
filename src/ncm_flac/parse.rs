@@ -1,14 +1,13 @@
-use std::error::Error;
+use base64::engine::general_purpose;
+use base64::Engine;
+use id3::TagLike;
+use json::JsonValue;
+use phf::{phf_map, Map};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use base64::Engine;
-use base64::engine::general_purpose;
-use id3::TagLike;
-use json::JsonValue;
-use phf::{Map, phf_map};
 use tempfile::NamedTempFile;
 use utils::{build_key_box, decrypt_aes128, get_data, write_in};
 
@@ -40,7 +39,7 @@ static FILTER: Map<&'static str, &'static str> = phf_map! {
 };
 
 impl NcmFile {
-    pub fn parse(input: PathBuf, mut output: PathBuf) -> Self {
+    pub fn parse(input: PathBuf, output: &PathBuf) -> Self {
         let mut src_file = File::open(&input).expect("Can't open the file!");
 
         // create the buf to ncm_flac data
@@ -57,8 +56,8 @@ impl NcmFile {
             exit(-1)
         }
 
+        // set offset to move 2 byte
         if let Err(e) = src_file.seek(SeekFrom::Current(2)) {
-            // set offset to move 2 byte
             println!("Error:{e}");
             exit(-1)
         };
@@ -66,20 +65,19 @@ impl NcmFile {
         // Parse music file name
         let s = match input.file_name() {
             None => panic!("read filename wrong"),
-            Some(str) =>
-                match str.to_str() {
-                    None => panic!("error name string"),
-                    Some(str) => str
-                }
+            Some(str) => match str.to_str() {
+                None => panic!("error name string"),
+                Some(str) => str,
+            },
         };
 
-        let mut music_filename = match s.get(0..s.len() - 4){
+        let mut music_filename = match s.get(0..s.len() - 4) {
             None => panic!("read filename wrong"),
-            Some(name) => name.to_string()
+            Some(name) => name.to_string(),
         };
 
-        for (k, v) in FILTER.into_iter() {
-            music_filename = music_filename.replace(*k, *v);
+        for (&k, &v) in FILTER.into_iter() {
+            music_filename = music_filename.replace(k, v);
         }
 
         let key_box_slice = decrypt_aes128(
@@ -108,7 +106,7 @@ impl NcmFile {
         let info = json::parse(
             std::str::from_utf8(&meta_info[6..]).expect("music info is not valid utf-8:"),
         )
-            .expect("error parsing json:");
+        .expect("error parsing json:");
 
         let format = info["format"].as_str().unwrap();
 
@@ -136,15 +134,14 @@ impl NcmFile {
             tmp.write(&buffer).expect("error 193");
         }
 
-        write_in(&mut output, tmp, &music_filename, format).expect("Error Happen!");
         NcmFile {
-            output_path: output,
+            output_path: write_in(output.clone(), tmp, &music_filename, format),
             meta: info,
             cover,
         }
     }
 
-    pub fn output(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn write_out(&mut self) {
         if self.meta.len() != 0 {
             // judge if metadate is exist
             let music_filename = self.output_path.as_os_str();
@@ -154,21 +151,17 @@ impl NcmFile {
             if self.cover.len() != 0 {
                 // judge cover data
                 let png: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-                if png == &self.cover[..8] {
-                    mimetype = "image/png";
+                mimetype = if &self.cover[..8] == png {
+                    "image/png"
                 } else {
-                    mimetype = "image/jpeg";
+                    "image/jpeg"
                 }
-            }
+            };
 
             let music_name = self.meta["musicName"].as_str().unwrap_or("?");
-
             let album = self.meta["album"].as_str().unwrap_or("?");
-
             let artist = &self.meta["artist"];
-
             let _bitrate = self.meta["bitrate"].as_u64().unwrap_or(0);
-
             let _duration = self.meta["duration"].as_u64().unwrap_or(0);
 
             // match music type
@@ -204,9 +197,7 @@ impl NcmFile {
 
                 tag.write_to_path(Path::new(music_filename), id3::Version::Id3v24)
                     .expect("error writing MP3 file:");
-
             } else {
-
                 let mut tag = metaflac::Tag::read_from_path(Path::new(music_filename))
                     .expect("error reading flac file:");
                 let c = tag.vorbis_comments_mut();
@@ -232,20 +223,18 @@ impl NcmFile {
                     .expect("error writing flac file:");
             }
         }
-        Ok(())
     }
 }
 
 mod utils {
-    use std::error::Error;
     use std::fs::{copy, File};
     use std::io::Read;
     use std::mem;
     use std::path::{Path, PathBuf};
 
-    use aes::Aes128Dec;
-    use aes::cipher::{BlockDecrypt, KeyInit};
     use aes::cipher::generic_array::GenericArray;
+    use aes::cipher::{BlockDecrypt, KeyInit};
+    use aes::Aes128Dec;
     use byteorder::{ByteOrder, NativeEndian};
     use tempfile::NamedTempFile;
 
@@ -296,8 +285,8 @@ mod utils {
         // To decrypt aes block
         let decrypt_blocks: Vec<_> = vector_blocks
             .iter()
-            .map(|block| {
-                let mut block_generic = GenericArray::from(*block);
+            .map(|&block| {
+                let mut block_generic = GenericArray::from(block);
                 cipher.decrypt_block(&mut block_generic);
                 let buff: Vec<_> = block_generic.to_vec().iter().map(|x| *x).collect();
                 buff
@@ -332,30 +321,29 @@ mod utils {
     }
 
     pub fn write_in(
-        target: &mut PathBuf,
+        mut target: PathBuf,
         file: NamedTempFile,
         _file_name: &str,
         _format: &str,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> PathBuf {
         match target.file_name() {
             None => {
                 target.push(_file_name);
                 target.set_extension(_format);
-                copy(file.into_temp_path(), Path::new(target)).expect("Error!");
-                Ok(())
+                copy(file.into_temp_path(), Path::new(&target)).expect("Error!");
+                target
             }
             Some(_) => {
                 if target.is_dir() {
                     target.push(_file_name);
                     target.set_extension(_format);
-                    copy(file.into_temp_path(), Path::new(target)).expect("Error!");
+                    copy(file.into_temp_path(), Path::new(&target)).expect("Error!");
                 } else if target.is_file() {
                     target.set_extension(_format);
-                    copy(file.into_temp_path(), Path::new(target)).expect("Error!");
+                    copy(file.into_temp_path(), Path::new(&target)).expect("Error!");
                 }
-                Ok(())
+                target
             }
         }
     }
-
 }
