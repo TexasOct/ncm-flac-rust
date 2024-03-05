@@ -3,6 +3,7 @@ use base64::Engine;
 use id3::TagLike;
 use json::JsonValue;
 use phf::{phf_map, Map};
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem;
@@ -18,6 +19,8 @@ pub struct NcmFile {
 }
 
 const MAGIC_HEAD: [u8; 8] = [0x43, 0x54, 0x45, 0x4e, 0x46, 0x44, 0x41, 0x4d];
+
+const PNG: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
 const AES_CORE_KEY: [u8; 16] = [
     0x68, 0x7A, 0x48, 0x52, 0x41, 0x6D, 0x73, 0x6F, 0x35, 0x6B, 0x49, 0x6E, 0x62, 0x61, 0x78, 0x57,
@@ -142,87 +145,111 @@ impl NcmFile {
     }
 
     pub fn write_out(&mut self) {
-        if self.meta.len() != 0 {
-            // judge if metadate is exist
-            let music_filename = self.output_path.as_os_str();
+        if self.meta.len() == 0 {
+            println!("Error: meta data is empty!");
+            exit(2)
+        }
 
-            let mut mimetype: &str = "";
-
-            if self.cover.len() != 0 {
-                // judge cover data
-                let png: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-                mimetype = if &self.cover[..8] == png {
-                    "image/png"
-                } else {
-                    "image/jpeg"
-                }
-            };
-
-            let music_name = self.meta["musicName"].as_str().unwrap_or("?");
-            let album = self.meta["album"].as_str().unwrap_or("?");
-            let artist = &self.meta["artist"];
-            let _bitrate = self.meta["bitrate"].as_u64().unwrap_or(0);
-            let _duration = self.meta["duration"].as_u64().unwrap_or(0);
-
-            // match music type
-            if self.meta["format"].as_str().unwrap() == "mp3" {
-                let mut tag =
-                    id3::Tag::read_from_path(Path::new(music_filename)).unwrap_or(id3::Tag::new());
-
-                tag.set_title(music_name);
-                tag.set_album(album);
-
-                let mut artists = match artist.as_str() {
-                    Some(str) => String::from(str),
-                    None => String::from("unknown"),
-                };
-
-                for i in 1..artist.len() {
-                    artists += "/";
-                    artists += artist[i][0].as_str().unwrap();
-                }
-
-                tag.set_artist(artists);
-
-                if self.cover.len() != 0 {
-                    let picture = id3::frame::Picture {
-                        mime_type: mimetype.to_owned(),
-                        picture_type: id3::frame::PictureType::CoverFront,
-                        description: String::new(),
-                        data: self.cover.clone(),
-                    };
-
-                    tag.add_frame(picture);
-                }
-
-                tag.write_to_path(Path::new(music_filename), id3::Version::Id3v24)
-                    .expect("error writing MP3 file:");
+        // judge if metadate is exist
+        let mut mimetype: &str = "";
+        if self.cover.len() != 0 {
+            // judge cover data
+            mimetype = if &self.cover[..8] == PNG {
+                "image/png"
             } else {
-                let mut tag = metaflac::Tag::read_from_path(Path::new(music_filename))
-                    .expect("error reading flac file:");
-                let c = tag.vorbis_comments_mut();
+                "image/jpeg"
+            }
+        };
+        let music_filename = self.output_path.as_os_str();
+        let music_name = self.meta["musicName"].as_str().unwrap_or("?");
+        let album = self.meta["album"].as_str().unwrap_or("?");
+        let artist = &self.meta["artist"];
+        let _bitrate = self.meta["bitrate"].as_u64().unwrap_or(0);
+        let _duration = self.meta["duration"].as_u64().unwrap_or(0);
 
-                c.set_title(vec![music_name]);
-                c.set_album(vec![album]);
-
-                let mut artists: Vec<String> = Vec::new();
-                for i in 0..artist.len() {
-                    artists.push(artist[i][0].as_str().unwrap().to_string());
-                }
-
-                c.set_artist(artists);
-                if self.cover.len() != 0 {
-                    tag.add_picture(
-                        mimetype,
-                        metaflac::block::PictureType::CoverFront,
-                        self.cover.clone(),
-                    );
-                }
-
-                tag.write_to_path(Path::new(music_filename))
-                    .expect("error writing flac file:");
+        // match music type
+        match self.meta["format"].as_str().unwrap() {
+            "mp3" => self.write_in_mp3(music_filename, music_name, album, artist, mimetype),
+            "flac" => self.write_in_flac(music_filename, music_name, album, artist, mimetype),
+            _ => {
+                println!("Error: unknown music format!");
+                exit(3)
             }
         }
+    }
+
+    fn write_in_flac(
+        &self,
+        filename: &OsStr,
+        music_name: &str,
+        album: &str,
+        artist: &JsonValue,
+        mimetype: &str,
+    ) {
+        let mut tag =
+            metaflac::Tag::read_from_path(Path::new(filename)).expect("error reading flac file:");
+        let c = tag.vorbis_comments_mut();
+
+        c.set_title(vec![music_name]);
+        c.set_album(vec![album]);
+
+        let mut artists: Vec<String> = Vec::new();
+        for i in 0..artist.len() {
+            artists.push(artist[i][0].as_str().unwrap().to_string());
+        }
+
+        c.set_artist(artists);
+
+        if self.cover.len() != 0 {
+            tag.add_picture(
+                mimetype,
+                metaflac::block::PictureType::CoverFront,
+                self.cover.clone(),
+            );
+        }
+
+        tag.write_to_path(Path::new(filename))
+            .expect("error writing flac file:");
+    }
+
+    fn write_in_mp3(
+        &self,
+        filename: &OsStr,
+        music_name: &str,
+        album: &str,
+        artist: &JsonValue,
+        mimetype: &str,
+    ) {
+        let mut tag = id3::Tag::read_from_path(Path::new(filename)).unwrap_or(id3::Tag::new());
+
+        tag.set_title(music_name);
+        tag.set_album(album);
+
+        let mut artists = match artist.as_str() {
+            Some(str) => String::from(str),
+            None => String::from("unknown"),
+        };
+
+        for i in 1..artist.len() {
+            artists += "/";
+            artists += artist[i][0].as_str().unwrap();
+        }
+
+        tag.set_artist(artists);
+
+        if self.cover.len() != 0 {
+            let picture = id3::frame::Picture {
+                mime_type: mimetype.to_owned(),
+                picture_type: id3::frame::PictureType::CoverFront,
+                description: String::new(),
+                data: self.cover.clone(),
+            };
+
+            tag.add_frame(picture);
+        }
+
+        tag.write_to_path(Path::new(filename), id3::Version::Id3v24)
+            .expect("error writing MP3 file:");
     }
 }
 
